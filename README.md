@@ -103,9 +103,7 @@ fall_detection/
 3. 提交Pull Request附修改说明
 
 ## 📜 许可证
-MIT License - 详见 [LICENSE](LICENSE)
+None
 
 ---
 
-> 提示：建议在README中添加**系统架构图**和**检测效果截图**（可参考[网页3]的视觉效果建议）。完整配置模板请参考[网页2]的经典结构和[网页4]的项目状态说明。
- 
