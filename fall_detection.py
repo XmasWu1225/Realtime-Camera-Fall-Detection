@@ -7,14 +7,14 @@ from datetime import datetime
 import threading
 import logging
 
-# torch torchvision torchaudio
+# torch torchvision
 # ultralytics
 # opencv-python-headless
 # av
 # tensorrt
 
 # 设置日志记录并将其保存到文件中
-log_filename = "/home/aa/workspace/test/Result/FallDetection/059/FallDetection/20250318detr/RTSP_test_v2/fall_detection.log" # 修改日志路径
+log_filename = "/home/aa/workspace/test/Result/FallDetection/20250325test/fall_detection.log" # 修改日志路径
 os.makedirs(os.path.dirname(log_filename), exist_ok=True)
 # 设置日志记录格式
 logging.basicConfig(
@@ -26,10 +26,10 @@ logging.basicConfig(
     ]
 )
 
-# 加载预训练的 RT-DETR 模型（替换原来的 YOLO 模型）
+# 加载预训练的 RT-DETR 模型
 detr_model = RTDETR("/home/aa/workspace/runs/detect/Fall/059/0318_3w_detr_fallv2/weights/best.engine")  
 # 加载 YOLOv8-Pose 模型
-pose_model = YOLO("yolov8n-pose.pt")  # 使用 YOLOv8-Pose 模型
+pose_model = YOLO("/home/aa/workspace/yolov8n-pose.pt")  # 使用 YOLOv8-Pose 模型
 
 # 定义RTSP流URL列表
 rtsp_urls = [
@@ -44,23 +44,26 @@ rtsp_urls = [
     # 'rtsp://192.168.0.213:8554/test1'
 ]
 
-original_frames_dir = "/home/aa/workspace/test/Result/FallDetection/059/FallDetection/20250318detr/RTSP_test_v2/original_frames" # 修改输出路径
-annotated_frames_dir = "/home/aa/workspace/test/Result/FallDetection/059/FallDetection/20250318detr/RTSP_test_v2/output_frames" # 修改输出路径
-cropped_frames_dir = "/home/aa/workspace/test/Result/FallDetection/059/FallDetection/20250318detr/RTSP_test_v2/cropped_frames" # 新增裁剪帧保存路径
+original_frames_dir = "/home/aa/workspace/test/Result/FallDetection/20250325test/original_frames" # 修改输出路径
+annotated_frames_dir = "/home/aa/workspace/test/Result/FallDetection/20250325test/output_frames" # 修改输出路径
+cropped_frames_dir = "/home/aa/workspace/test/Result/FallDetection/20250325test/cropped_frames" # 新增裁剪帧保存路径
 
 # 确保目录存在
 os.makedirs(original_frames_dir, exist_ok=True)
 os.makedirs(annotated_frames_dir, exist_ok=True)
 os.makedirs(cropped_frames_dir, exist_ok=True) # 确保裁剪帧目录存在
 
-confidence_threshold = 0.7  # 设置RTDETR置信度阈值
-iou_threshold = 0.8  # 设置IOU阈值用于去重
+class_detect = [1]
+confidence_threshold = 0.7  # 设置RTDETR置信度阈值用于行为分类检测
+confidence_threshold2 = 0.8 # 设置RTDETR置信度阈值用于不同置信度场景下的条件判断
+iou_threshold = 0.8  # 设置IOU阈值比较摔倒重叠情况
+iou_threshold2 = 0.9 # 设置IOU阈值去重
 knee_confidence_threshold_pose_high = 0.7 # 膝关节置信度阈值(RTDETR high confidence)，用于姿态检测
 knee_confidence_threshold_pose_low = 0.85 # 膝关节置信度阈值(RTDETR low confidence)，用于姿态检测
-
+pose_conf = 0.4
 left_knee_keypoint_index = 13  # 左膝关节关键点索引
 right_knee_keypoint_index = 14  # 右膝关节关键点索引
-crop_padding = 40 # 裁剪区域外扩像素点
+crop_padding = 40 # 裁剪区域外扩像素点，扩大pose检测区域，减少误检测
 
 def calculate_iou(box1, box2):  # 计算IOU,交并比
     """
@@ -136,9 +139,7 @@ def process_camera(rtsp_url, cam_id, previous_boxes, keyframe_thread):  # 处理
                 continue
 
             start_time = time.time()
-
-            # 修改：直接对每一帧进行检测
-            result = detr_model.predict(source=frame, classes=[1], conf=confidence_threshold)
+            result = detr_model.predict(source=frame, classes=class_detect, conf=confidence_threshold)
             boxes = result[0].boxes.cpu().numpy()
 
             if len(boxes) > 0:  # 如果检测到目标
@@ -176,11 +177,11 @@ def process_camera(rtsp_url, cam_id, previous_boxes, keyframe_thread):  # 处理
                     # 计算第一次和第二次检测框的IOU
                     iou_confirmation = calculate_iou(box_result_1_xyxy, box_result_2_xyxy)
 
-                    if iou_confirmation > 0.8: # IOU 大于 0.8，认为人静止不动，可能是摔倒
+                    if iou_confirmation > iou_threshold: # IOU 大于 0.8，认为人几乎不动，可能是摔倒
                         logging.info(f"High IOU ({iou_confirmation:.2f} > 0.8) between first and confirmation detections for camera {cam_id}, proceeding with pose estimation.")
 
                         # 裁剪区域
-                        box_result_2 = boxes_result_2[0].xyxy[0] # 取第二个检测框 (实际上用哪个框都可以，因为IOU很高)
+                        box_result_2 = boxes_result_2[0].xyxy[0] # 取第二个检测框
                         x1, y1, x2, y2 = map(int, box_result_2)
 
                         # 扩展裁剪区域
@@ -191,7 +192,7 @@ def process_camera(rtsp_url, cam_id, previous_boxes, keyframe_thread):  # 处理
                         cropped_frame = frame[y1_crop:y2_crop, x1_crop:x2_crop]
 
                         # Determine knee confidence threshold for pose estimation
-                        if rtdetr_confidence >= 0.8:
+                        if rtdetr_confidence >= confidence_threshold2:
                             knee_confidence_threshold_pose = knee_confidence_threshold_pose_high  # Use lower threshold
                             logging.info(f"Camera {cam_id}: Using low pose confidence threshold: {knee_confidence_threshold_pose:.2f}")
                         else:
@@ -199,7 +200,7 @@ def process_camera(rtsp_url, cam_id, previous_boxes, keyframe_thread):  # 处理
                             logging.info(f"Camera {cam_id}: Using high pose confidence threshold: {knee_confidence_threshold_pose:.2f}")
 
                         # 使用 Yolopose 进行姿态检测
-                        pose_results = pose_model.predict(cropped_frame,conf=0.5)
+                        pose_results = pose_model.predict(cropped_frame,conf=pose_conf)
                         if pose_results and len(pose_results) > 0:
                             keypoints = pose_results[0].keypoints.cpu().numpy()
 
@@ -270,7 +271,7 @@ def process_camera(rtsp_url, cam_id, previous_boxes, keyframe_thread):  # 处理
                             continue
 
 
-                    elif iou_confirmation <= 0.8: # IOU 小于等于 0.8，认为人移动了，不是静止摔倒
+                    elif iou_confirmation <= 0.8: # IOU 小于等于 0.8，认为人移动了，不具有摔倒风险
                         logging.info(f"Low IOU ({iou_confirmation:.2f} <= 0.8) between first and confirmation detections for camera {cam_id}, assuming person is moving, resetting detection cycle.")
                         detection_result_1 = None
                         frame_result_1 = None
